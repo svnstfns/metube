@@ -6,7 +6,8 @@ import time
 import asyncio
 import multiprocessing
 import logging
-from dl_formats import get_format, get_opts
+import re
+from dl_formats import get_format, get_opts, AUDIO_FORMATS
 
 log = logging.getLogger('ytdl')
 
@@ -27,19 +28,23 @@ class DownloadQueueNotifier:
         raise NotImplementedError
 
 class DownloadInfo:
-    def __init__(self, id, title, url, quality, format):
-        self.id, self.title, self.url = id, title, url
+    def __init__(self, id, title, url, quality, format, folder, custom_name_prefix):
+        self.id = id if len(custom_name_prefix) == 0 else f'{custom_name_prefix}.{id}'
+        self.title = title if len(custom_name_prefix) == 0 else f'{custom_name_prefix}.{title}'
+        self.url = url
         self.quality = quality
         self.format = format
+        self.folder = folder
+        self.custom_name_prefix = custom_name_prefix
         self.status = self.msg = self.percent = self.speed = self.eta = None
-        self.filename = None
         self.timestamp = time.time_ns()
 
 class Download:
     manager = None
 
-    def __init__(self, download_dir, output_template, output_template_chapter, quality, format, ytdl_opts, info):
+    def __init__(self, download_dir, temp_dir, output_template, output_template_chapter, quality, format, ytdl_opts, info):
         self.download_dir = download_dir
+        self.temp_dir = temp_dir
         self.output_template = output_template
         self.output_template_chapter = output_template_chapter
         self.format = get_format(format, quality)
@@ -68,15 +73,18 @@ class Download:
                 )})
             def put_status_postprocessor(d):
                 if d['postprocessor'] == 'MoveFiles' and d['status'] == 'finished':
-                    self.status_queue.put({'status': 'finished', 'filename': d['info_dict']['filepath']})
+                    if '__finaldir' in d['info_dict']:
+                        filename = os.path.join(d['info_dict']['__finaldir'], os.path.basename(d['info_dict']['filepath']))
+                    else:
+                        filename = d['info_dict']['filepath']
+                    self.status_queue.put({'status': 'finished', 'filename': filename})
             ret = yt_dlp.YoutubeDL(params={
                 'quiet': True,
                 'no_color': True,
                 #'skip_download': True,
-                'paths': {"home": self.download_dir},
+                'paths': {"home": self.download_dir, "temp": self.temp_dir},
                 'outtmpl': { "default": self.output_template, "chapter": self.output_template_chapter },
                 'format': self.format,
-                'cachedir': False,
                 'socket_timeout': 30,
                 'progress_hooks': [put_status],
                 'postprocessor_hooks': [put_status_postprocessor],
@@ -126,6 +134,10 @@ class Download:
             self.tmpfilename = status.get('tmpfilename')
             if 'filename' in status:
                 self.info.filename = os.path.relpath(status.get('filename'), self.download_dir)
+
+                # Set correct file extension for thumbnails
+                if(self.info.format == 'thumbnail'):
+                    self.info.filename = re.sub(r'\.webm$', '.jpg', self.info.filename)
             self.info.status = status['status']
             self.info.msg = status.get('msg')
             if 'downloaded_bytes' in status:
@@ -148,7 +160,7 @@ class PersistentQueue:
     
     def load(self):
         for k, v in self.saved_items():
-            self.dict[k] = Download(None, None, None, None, None, {}, v)
+            self.dict[k] = Download(None, None, None, None, None, None, {}, v)
 
     def exists(self, key):
         return key in self.dict
@@ -164,7 +176,7 @@ class PersistentQueue:
             return sorted(shelf.items(), key=lambda item: item[1].timestamp)
 
     def put(self, value):
-        key = value.info.id
+        key = value.info.url
         self.dict[key] = value
         with shelve.open(self.path, 'w') as shelf:
             shelf[key] = value.info
@@ -192,7 +204,7 @@ class DownloadQueue:
     
     async def __import_queue(self):
         for k, v in self.queue.saved_items():
-            await self.add(v.url, v.quality, v.format)
+            await self.add(v.url, v.quality, v.format, v.folder, v.custom_name_prefix)
 
     async def initialize(self):
         self.event = asyncio.Event()
@@ -207,7 +219,30 @@ class DownloadQueue:
             **self.config.YTDL_OPTIONS,
         }).extract_info(url, download=False)
 
-    async def __add_entry(self, entry, quality, format, already):
+    def __calc_download_path(self, quality, format, folder):
+        """Calculates download path from quality, format and folder attributes.
+
+        Returns:
+            Tuple dldirectory, error_message both of which might be None (but not at the same time)
+        """
+        # Keep consistent with frontend
+        base_directory = self.config.DOWNLOAD_DIR if (quality != 'audio' and format not in AUDIO_FORMATS) else self.config.AUDIO_DOWNLOAD_DIR
+        if folder:
+            if not self.config.CUSTOM_DIRS:
+                return None, {'status': 'error', 'msg': f'A folder for the download was specified but CUSTOM_DIRS is not true in the configuration.'}
+            dldirectory = os.path.realpath(os.path.join(base_directory, folder))
+            real_base_directory = os.path.realpath(base_directory)
+            if not dldirectory.startswith(real_base_directory):
+                return None, {'status': 'error', 'msg': f'Folder "{folder}" must resolve inside the base download directory "{real_base_directory}"'}
+            if not os.path.isdir(dldirectory):
+                if not self.config.CREATE_CUSTOM_DIRS:
+                    return None, {'status': 'error', 'msg': f'Folder "{folder}" for download does not exist inside base directory "{real_base_directory}", and CREATE_CUSTOM_DIRS is not true in the configuration.'}
+                os.makedirs(dldirectory, exist_ok=True)
+        else:
+            dldirectory = base_directory
+        return dldirectory, None
+
+    async def __add_entry(self, entry, quality, format, folder, custom_name_prefix, already):
         etype = entry.get('_type') or 'video'
         if etype == 'playlist':
             entries = entry['entries']
@@ -220,29 +255,31 @@ class DownloadQueue:
                 for property in ("id", "title", "uploader", "uploader_id"):
                     if property in entry:
                         etr[f"playlist_{property}"] = entry[property]
-                results.append(await self.__add_entry(etr, quality, format, already))
+                results.append(await self.__add_entry(etr, quality, format, folder, custom_name_prefix, already))
             if any(res['status'] == 'error' for res in results):
                 return {'status': 'error', 'msg': ', '.join(res['msg'] for res in results if res['status'] == 'error' and 'msg' in res)}
             return {'status': 'ok'}
         elif etype == 'video' or etype.startswith('url') and 'id' in entry and 'title' in entry:
             if not self.queue.exists(entry['id']):
-                dl = DownloadInfo(entry['id'], entry['title'], entry.get('webpage_url') or entry['url'], quality, format)
-                dldirectory = self.config.DOWNLOAD_DIR if (quality != 'audio' and format != 'mp3') else self.config.AUDIO_DOWNLOAD_DIR
-                output = self.config.OUTPUT_TEMPLATE
+                dl = DownloadInfo(entry['id'], entry['title'], entry.get('webpage_url') or entry['url'], quality, format, folder, custom_name_prefix)
+                dldirectory, error_message = self.__calc_download_path(quality, format, folder)
+                if error_message is not None:
+                    return error_message
+                output = self.config.OUTPUT_TEMPLATE if len(custom_name_prefix) == 0 else f'{custom_name_prefix}.{self.config.OUTPUT_TEMPLATE}'
                 output_chapter = self.config.OUTPUT_TEMPLATE_CHAPTER
                 for property, value in entry.items():
                     if property.startswith("playlist"):
                         output = output.replace(f"%({property})s", str(value))
-                self.queue.put(Download(dldirectory, output, output_chapter, quality, format, self.config.YTDL_OPTIONS, dl))
+                self.queue.put(Download(dldirectory, self.config.TEMP_DIR, output, output_chapter, quality, format, self.config.YTDL_OPTIONS, dl))
                 self.event.set()
                 await self.notifier.added(dl)
             return {'status': 'ok'}
         elif etype.startswith('url'):
-            return await self.add(entry['url'], quality, format, already)
+            return await self.add(entry['url'], quality, format, folder, custom_name_prefix, already)
         return {'status': 'error', 'msg': f'Unsupported resource "{etype}"'}
 
-    async def add(self, url, quality, format, already=None):
-        log.info(f'adding {url}')
+    async def add(self, url, quality, format, folder, custom_name_prefix, already=None):
+        log.info(f'adding {url}: {quality=} {format=} {already=} {folder=} {custom_name_prefix=}')
         already = set() if already is None else already
         if url in already:
             log.info('recursion detected, skipping')
@@ -253,7 +290,7 @@ class DownloadQueue:
             entry = await asyncio.get_running_loop().run_in_executor(None, self.__extract_info, url)
         except yt_dlp.utils.YoutubeDLError as exc:
             return {'status': 'error', 'msg': str(exc)}
-        return await self.__add_entry(entry, quality, format, already)
+        return await self.__add_entry(entry, quality, format, folder, custom_name_prefix, already)
 
     async def cancel(self, ids):
         for id in ids:
@@ -272,6 +309,13 @@ class DownloadQueue:
             if not self.done.exists(id):
                 log.warn(f'requested delete for non-existent download {id}')
                 continue
+            if self.config.DELETE_FILE_ON_TRASHCAN:
+                dl = self.done.get(id)
+                try:
+                    dldirectory, _ = self.__calc_download_path(dl.info.quality, dl.info.format, dl.info.folder)
+                    os.remove(os.path.join(dldirectory, dl.info.filename))
+                except Exception as e:
+                    log.warn(f'deleting file for download {id} failed with error message {e!r}')
             self.done.delete(id)
             await self.notifier.cleared(id)
         return {'status': 'ok'}
