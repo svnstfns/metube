@@ -1,0 +1,29 @@
+  GNU nano 6.2                                                  docker-compose.yml
+version: "3"
+services:
+  punktube:
+    image: punktube
+    hostname: punktube
+    container_name: punktube
+    networks:
+      - plex_net
+    ports:
+      - "80:80"
+    environment:
+      - YTDL_OPTIONS={"cookiefile":"/cookies/cookies.txt", "format":"bv+ba/b", "recode-video":"mp4", "postprocessors":[{"key":"FFmpegMetadat>
+      # - YTDL_OPTIONS={"cookiefile":"/cookies/cookies.txt", "--add-metadata", "--compat-options embed-metadata", "format":"bv+ba/b", "recod>
+      - UID=1020
+      - GID=1001
+      # - DOWNLOAD_DIRS_INDEXABLE=true
+      # - CUSTOM_DIRS=true
+      # - CREATE_CUSTOM_DIRS=true
+      # - OUTPUT_TEMPLATE=%(extractor)s/%(uploader)s/ID--%(id)s--%(title)s.%(ext)s
+    restart: unless-stopped
+    volumes:
+      - /mnt/gstf-ng-video2/inbox/punktube:/downloads
+      - /var/docker/services/metube/cookies:/cookies
+networks:
+  plex_net:
+    external: true
+
+

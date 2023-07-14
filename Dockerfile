@@ -25,6 +25,7 @@ RUN sed -i 's/\r$//g' docker-entrypoint.sh && \
     rm -rf /var/cache/apk/* && \
     mkdir /.cache && chmod 777 /.cache
 
+COPY punk-logo.txt ./punk-logo.txt
 COPY favicon ./favicon
 COPY app ./app
 COPY --from=builder /metube/dist/metube ./ui/dist/metube
@@ -37,5 +38,5 @@ ENV DOWNLOAD_DIR /downloads
 ENV STATE_DIR /downloads/.metube
 ENV TEMP_DIR /downloads
 VOLUME /downloads
-EXPOSE 8081
+EXPOSE 80
 CMD [ "./docker-entrypoint.sh" ]

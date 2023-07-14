@@ -1,0 +1,50 @@
+write a dockerfile
+
+image alpine lts
+
+set system hostname to "punktube"
+    echo "punktube" > /etc/hostname
+
+and activate change: hostname -F /etc/hostname
+
+add to /etc/hosts file:
+    ::1             localhost ipv6-localhost ipv6-loopback
+    fe00::0         ipv6-localnet
+    ff00::0         ipv6-mcastprefix
+    ff02::1         ipv6-allnodes
+    ff02::2         ipv6-allrouters
+    ff02::3         ipv6-allhosts
+
+configure DNS:
+  To configure loopback, add the following to a new file /etc/network/interfaces:
+      auto lo
+      iface lo inet loopback
+
+  Add the following to the file /etc/network/interfaces, above any IP configuration for eth0
+      auto eth0
+
+  Add the following to the file /etc/network/interfaces, below the auto eth0 definition:
+      iface eth0 inet6 auto
+
+  Add the following to the file /etc/network/interfaces, below the auto eth0 definition:
+      iface eth0 inet dhcp
+
+  By default, the busybox DHCP client (udhcpc) requests a static set of options from the DHCP server. If you need to extend this set, you can do so by setting some additional command line options for the DHCP client, via the udhcpc_opts in your interface configuration. The following example requests domain-search option:
+
+      iface eth0 inet dhcp
+          udhcpc_opts -O search
+
+activate changes
+/etc/init.d/networking restart
+
+if no errors so far, make a ping-test:
+  ping www.google.com
+
+for an ipv6 traceroute:
+  apk add iputils
+
+then execute
+  traceroute6 ipv6.google.com
+
+
+add verbose screen messages, so user can see if dhcp is working properly

@@ -1,0 +1,11 @@
+FROM alpine:3.14
+
+# copy logo
+COPY punk-logo.txt /punk-logo.txt
+
+# Copy entrypoint script
+COPY docker-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Set entrypoint
+ENTRYPOINT ["/entrypoint.sh"]

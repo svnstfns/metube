@@ -7,6 +7,7 @@ import asyncio
 import multiprocessing
 import logging
 import re
+from mutagen.mp4 import MP4
 from dl_formats import get_format, get_opts, AUDIO_FORMATS
 
 log = logging.getLogger('ytdl')
@@ -28,7 +29,7 @@ class DownloadQueueNotifier:
         raise NotImplementedError
 
 class DownloadInfo:
-    def __init__(self, id, title, url, quality, format, folder, custom_name_prefix):
+    def __init__(self, id, title, url, quality, format, folder, custom_name_prefix, tags):
         self.id = id if len(custom_name_prefix) == 0 else f'{custom_name_prefix}.{id}'
         self.title = title if len(custom_name_prefix) == 0 else f'{custom_name_prefix}.{title}'
         self.url = url
@@ -36,8 +37,25 @@ class DownloadInfo:
         self.format = format
         self.folder = folder
         self.custom_name_prefix = custom_name_prefix
+        self.tags = tags  # New "tags" attribute
         self.status = self.msg = self.percent = self.speed = self.eta = None
         self.timestamp = time.time_ns()
+
+    def write_metadata(self):
+        """
+        Write genre metadata to the video file.
+        """
+        try:
+
+            video = MP4(self.filename)
+            if self.tags:
+                keywords = ", ".join(self.tags)
+                video["\xa9gen"] = keywords
+            video.save()
+
+        except Exception as e:
+            self.status_queue.put({'status': 'error', 'msg': str(e)})
+
 
 class Download:
     manager = None
@@ -105,7 +123,11 @@ class Download:
         self.info.status = 'preparing'
         await self.notifier.updated(self.info)
         asyncio.create_task(self.update_status())
-        return await self.loop.run_in_executor(None, self.proc.join)
+        await self.loop.run_in_executor(None, self.proc.join)  # Wait for the process to finish
+        if self.info.status == 'finished':
+            write_metadata(os.path.join(self.download_dir, self.info.filename), ", ".join(self.info.tags))
+
+        return
 
     def cancel(self):
         if self.running():
@@ -157,17 +179,17 @@ class PersistentQueue:
             pass
         self.path = path
         self.dict = OrderedDict()
-    
+
     def load(self):
         for k, v in self.saved_items():
             self.dict[k] = Download(None, None, None, None, None, None, {}, v)
 
     def exists(self, key):
         return key in self.dict
-    
+
     def get(self, key):
         return self.dict[key]
-    
+
     def items(self):
         return self.dict.items()
 
@@ -180,7 +202,7 @@ class PersistentQueue:
         self.dict[key] = value
         with shelve.open(self.path, 'w') as shelf:
             shelf[key] = value.info
-    
+
     def delete(self, key):
         del self.dict[key]
         with shelve.open(self.path, 'w') as shelf:
@@ -189,7 +211,7 @@ class PersistentQueue:
     def next(self):
         k, v = next(iter(self.dict.items()))
         return k, v
-    
+
     def empty(self):
         return not bool(self.dict)
 
@@ -201,10 +223,10 @@ class DownloadQueue:
         self.queue = PersistentQueue(self.config.STATE_DIR + '/queue')
         self.done = PersistentQueue(self.config.STATE_DIR + '/completed')
         self.done.load()
-    
+
     async def __import_queue(self):
         for k, v in self.queue.saved_items():
-            await self.add(v.url, v.quality, v.format, v.folder, v.custom_name_prefix)
+            await self.add(v.url, v.quality, v.format, v.folder, v.custom_name_prefix, v.tags)
 
     async def initialize(self):
         self.event = asyncio.Event()
@@ -242,7 +264,7 @@ class DownloadQueue:
             dldirectory = base_directory
         return dldirectory, None
 
-    async def __add_entry(self, entry, quality, format, folder, custom_name_prefix, already):
+    async def __add_entry(self, entry, quality, format, folder, custom_name_prefix, tags, already):
         etype = entry.get('_type') or 'video'
         if etype == 'playlist':
             entries = entry['entries']
@@ -255,31 +277,34 @@ class DownloadQueue:
                 for property in ("id", "title", "uploader", "uploader_id"):
                     if property in entry:
                         etr[f"playlist_{property}"] = entry[property]
-                results.append(await self.__add_entry(etr, quality, format, folder, custom_name_prefix, already))
+                results.append(await self.__add_entry(etr, quality, format, folder, custom_name_prefix, tags, already))
             if any(res['status'] == 'error' for res in results):
                 return {'status': 'error', 'msg': ', '.join(res['msg'] for res in results if res['status'] == 'error' and 'msg' in res)}
             return {'status': 'ok'}
         elif etype == 'video' or etype.startswith('url') and 'id' in entry and 'title' in entry:
             if not self.queue.exists(entry['id']):
-                dl = DownloadInfo(entry['id'], entry['title'], entry.get('webpage_url') or entry['url'], quality, format, folder, custom_name_prefix)
+                dl = DownloadInfo(entry['id'], entry['title'], entry.get('webpage_url') or entry['url'], quality,
+                                  format, folder, custom_name_prefix, tags)
                 dldirectory, error_message = self.__calc_download_path(quality, format, folder)
                 if error_message is not None:
                     return error_message
-                output = self.config.OUTPUT_TEMPLATE if len(custom_name_prefix) == 0 else f'{custom_name_prefix}.{self.config.OUTPUT_TEMPLATE}'
+                output = self.config.OUTPUT_TEMPLATE if len(
+                    custom_name_prefix) == 0 else f'{custom_name_prefix}.{self.config.OUTPUT_TEMPLATE}'
                 output_chapter = self.config.OUTPUT_TEMPLATE_CHAPTER
                 for property, value in entry.items():
                     if property.startswith("playlist"):
                         output = output.replace(f"%({property})s", str(value))
-                self.queue.put(Download(dldirectory, self.config.TEMP_DIR, output, output_chapter, quality, format, self.config.YTDL_OPTIONS, dl))
+                self.queue.put(Download(dldirectory, self.config.TEMP_DIR, output, output_chapter, quality, format,
+                                        self.config.YTDL_OPTIONS, dl))
                 self.event.set()
                 await self.notifier.added(dl)
             return {'status': 'ok'}
         elif etype.startswith('url'):
-            return await self.add(entry['url'], quality, format, folder, custom_name_prefix, already)
+            return await self.add(entry['url'], quality, format, folder, custom_name_prefix, tags, already)
         return {'status': 'error', 'msg': f'Unsupported resource "{etype}"'}
 
-    async def add(self, url, quality, format, folder, custom_name_prefix, already=None):
-        log.info(f'adding {url}: {quality=} {format=} {already=} {folder=} {custom_name_prefix=}')
+    async def add(self, url, quality, format, folder, custom_name_prefix, tags, already=None):
+        log.info(f'adding {url}: {quality=} {format=} {already=} {folder=} {custom_name_prefix=} {tags=}')
         already = set() if already is None else already
         if url in already:
             log.info('recursion detected, skipping')
@@ -290,7 +315,7 @@ class DownloadQueue:
             entry = await asyncio.get_running_loop().run_in_executor(None, self.__extract_info, url)
         except yt_dlp.utils.YoutubeDLError as exc:
             return {'status': 'error', 'msg': str(exc)}
-        return await self.__add_entry(entry, quality, format, folder, custom_name_prefix, already)
+        return await self.__add_entry(entry, quality, format, folder, custom_name_prefix, tags, already)
 
     async def cancel(self, ids):
         for id in ids:
@@ -318,6 +343,7 @@ class DownloadQueue:
                     log.warn(f'deleting file for download {id} failed with error message {e!r}')
             self.done.delete(id)
             await self.notifier.cleared(id)
+            dl.write_metadata()  # Call write_metadata function for the cleared download
         return {'status': 'ok'}
 
     def get(self):
