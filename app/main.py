@@ -10,7 +10,7 @@ import json
 import pathlib
 
 log = logging.getLogger('main')
-
+from ytdl import DownloadQueueNotifier, DownloadQueue
 
 class Config:
     _DEFAULTS = {
