@@ -1,9 +1,7 @@
 version: "3"
 services:
   punktube:
-    build:
-      context: .
-      dockerfile: ytdl-dockerfile
+    image: punx:latest
     hostname: punktube
     container_name: punktube
     mac_address: 02:42:c0:a8:84:22

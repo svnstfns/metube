@@ -9,6 +9,8 @@ import logging
 import json
 import pathlib
 
+from ytdl import DownloadQueueNotifier, DownloadQueue
+
 log = logging.getLogger('main')
 
 
@@ -54,9 +56,7 @@ class Config:
             log.error('YTDL_OPTIONS is invalid')
             sys.exit(1)
 
-
 config = Config()
-
 
 class ObjectSerializer(json.JSONEncoder):
     def default(self, obj):
@@ -65,13 +65,11 @@ class ObjectSerializer(json.JSONEncoder):
         else:
             return json.JSONEncoder.default(self, obj)
 
-
 serializer = ObjectSerializer()
 app = web.Application()
 sio = socketio.AsyncServer(cors_allowed_origins='*')
 sio.attach(app, socketio_path=config.URL_PREFIX + 'socket.io')
 routes = web.RouteTableDef()
-
 
 class Notifier(DownloadQueueNotifier):
     async def added(self, dl):
@@ -88,7 +86,6 @@ class Notifier(DownloadQueueNotifier):
 
     async def cleared(self, id):
         await sio.emit('cleared', serializer.encode(id))
-
 
 dqueue = DownloadQueue(config, Notifier())
 app.on_startup.append(lambda app: dqueue.initialize())
