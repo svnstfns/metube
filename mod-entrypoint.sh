@@ -37,9 +37,9 @@ echo "Installing iputils for traceroute..."
 apk add iputils
 
 echo "******** NETWORK-TEST *******"
-echo "Performing ping test for 30 seconds..."
+echo "Performing ping test for 5 sec..."
 counter=0
-while [ $counter -lt 10 ]
+while [ $counter -lt 5 ]
 do
   ping -c 4 www.google.com
   if [ $? -eq 0 ]; then
@@ -49,9 +49,9 @@ do
   sleep 1
 done
 
-echo "Performing IPv6 traceroute for 30 seconds..."
+echo "Performing IPv6 traceroute for 5 sec..."
 counter=0
-while [ $counter -lt 10 ]
+while [ $counter -lt 5 ]
 do
   traceroute6 -m 20 ipv6.google.com
   if [ $? -eq 0 ]; then
@@ -61,7 +61,11 @@ do
   sleep 1
 done
 
-echo "***PUNKTUBE ***"
+echo "cat punk-logo.txt"
+echo ""
+echo ""
+sleep 10
+
 echo "Setting umask to ${UMASK}"
 umask ${UMASK}
 echo "Creating download directory (${DOWNLOAD_DIR}), state directory (${STATE_DIR}), and temp dir (${TEMP_DIR})"

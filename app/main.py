@@ -9,9 +9,6 @@ import logging
 import json
 import pathlib
 
-
-from ytdl import DownloadQueueNotifier, DownloadQueue
-
 log = logging.getLogger('main')
 
 
@@ -30,9 +27,9 @@ class Config:
         'OUTPUT_TEMPLATE_CHAPTER': '%(title)s - %(section_number)s %(section_title)s.%(ext)s',
         'YTDL_OPTIONS': '{}',
         'HOST': '0.0.0.0',
-        'PORT': '8081',
+        'PORT': '80',
         'BASE_DIR': '',
-        'DARK_MODE': 'false'
+        'DARK_MODE': 'true'
     }
 
     _BOOLEAN = ('DOWNLOAD_DIRS_INDEXABLE', 'CUSTOM_DIRS', 'CREATE_CUSTOM_DIRS', 'DELETE_FILE_ON_TRASHCAN', 'DARK_MODE')
@@ -106,12 +103,12 @@ async def add(request):
         raise web.HTTPBadRequest()
     format = post.get('format')
     folder = post.get('folder')
-    tags = post.get('tags')
+    tags = post.get('tags') # tags added
 
     custom_name_prefix = post.get('custom_name_prefix')
     if custom_name_prefix is None:
         custom_name_prefix = ''
-    status = await dqueue.add(url, quality, format, folder, tags, custom_name_prefix)
+    status = await dqueue.add(url, quality, format, folder, tags, custom_name_prefix) # tags added
     return web.Response(text=serializer.encode(status))
 
 
